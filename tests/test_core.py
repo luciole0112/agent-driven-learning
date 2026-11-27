@@ -110,7 +110,7 @@ def test_agent_loop_with_scripted_llm(splits):
                 {"id": name, "type": "function", "function": {"name": name, "arguments": __import__("json").dumps(args)}}]}
 
     env = ADLEnvironment(EditableCNN(), splits, Budget())
-    assert len(tool_schemas(env)) == len(TOOL_SPECS)
+    assert len(tool_schemas(env)) == len(env.available_tools())
     rep = run_agent(env, Scripted(), log=lambda *_: None)
     assert env.submitted and "auroc_heldout" in rep
 
