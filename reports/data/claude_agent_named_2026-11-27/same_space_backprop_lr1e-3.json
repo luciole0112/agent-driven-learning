@@ -1,0 +1,32 @@
+{
+  "dim": 399,
+  "lr": 0.001,
+  "steps": 1000,
+  "backprop": [
+    {
+      "auroc_train": 0.5,
+      "auroc_dev": 0.5004006410256411,
+      "auroc_heldout": 0.5018641549631374,
+      "auroc_shift": 0.5,
+      "base_acc_final": 1.0,
+      "seed": 0
+    },
+    {
+      "auroc_train": 0.5005513784461153,
+      "auroc_dev": 0.5081380208333334,
+      "auroc_heldout": 0.4986924885167253,
+      "auroc_shift": 0.49606299212598426,
+      "base_acc_final": 1.0,
+      "seed": 1
+    },
+    {
+      "auroc_train": 0.5,
+      "auroc_dev": 0.49759615384615385,
+      "auroc_heldout": 0.4989648033126294,
+      "auroc_shift": 0.5,
+      "base_acc_final": 1.0,
+      "seed": 2
+    }
+  ],
+  "es": []
+}

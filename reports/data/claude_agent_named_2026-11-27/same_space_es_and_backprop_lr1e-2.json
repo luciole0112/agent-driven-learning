@@ -1,0 +1,55 @@
+{
+  "dim": 399,
+  "backprop": [
+    {
+      "auroc_train": 0.5,
+      "auroc_dev": 0.5,
+      "auroc_heldout": 0.5,
+      "auroc_shift": 0.5,
+      "base_acc_final": 1.0,
+      "seed": 0
+    },
+    {
+      "auroc_train": 0.5,
+      "auroc_dev": 0.5,
+      "auroc_heldout": 0.5,
+      "auroc_shift": 0.5,
+      "base_acc_final": 1.0,
+      "seed": 1
+    },
+    {
+      "auroc_train": 0.5,
+      "auroc_dev": 0.5,
+      "auroc_heldout": 0.5,
+      "auroc_shift": 0.5,
+      "base_acc_final": 1.0,
+      "seed": 2
+    }
+  ],
+  "es": [
+    {
+      "auroc_train": 0.9972932330827068,
+      "auroc_dev": 0.98828125,
+      "auroc_heldout": 0.991754468165199,
+      "auroc_shift": 0.9330068497535369,
+      "base_acc_final": 1.0,
+      "seed": 0
+    },
+    {
+      "auroc_train": 0.8247619047619048,
+      "auroc_dev": 0.8858924278846154,
+      "auroc_heldout": 0.8458938532944084,
+      "auroc_shift": 0.9009986556558479,
+      "base_acc_final": 1.0,
+      "seed": 1
+    },
+    {
+      "auroc_train": 0.8313784461152882,
+      "auroc_dev": 0.8762520032051282,
+      "auroc_heldout": 0.8233157530104801,
+      "auroc_shift": 0.9184751296331861,
+      "base_acc_final": 1.0,
+      "seed": 2
+    }
+  ]
+}

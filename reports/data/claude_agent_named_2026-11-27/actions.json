@@ -1,0 +1,1264 @@
+[
+ {
+  "tool": "inspect_model",
+  "rationale": "構造と予算を確認"
+ },
+ {
+  "tool": "evaluate",
+  "args": {
+   "split": "dev"
+  },
+  "rationale": "出発点のdev AUROC"
+ },
+ {
+  "tool": "show_examples",
+  "args": {
+   "split": "train",
+   "label": 1,
+   "n": 16
+  },
+  "rationale": "正例を見る"
+ },
+ {
+  "tool": "show_examples",
+  "args": {
+   "split": "train",
+   "label": 0,
+   "n": 16
+  },
+  "rationale": "負例を見る"
+ },
+ {
+  "tool": "render_kernels",
+  "args": {
+   "layer": "conv1"
+  },
+  "rationale": "conv1のカーネルを見る"
+ },
+ {
+  "tool": "channel_stats",
+  "args": {
+   "layer": "conv3",
+   "split": "train"
+  },
+  "rationale": "既存のconv3に概念を区別するチャネルがあるか"
+ },
+ {
+  "tool": "channel_stats",
+  "args": {
+   "layer": "conv1",
+   "split": "train"
+  },
+  "rationale": "既存のconv1チャネルの反応差"
+ },
+ {
+  "tool": "capture_activations",
+  "args": {
+   "layer": "input",
+   "key": "img",
+   "split": "train",
+   "ids": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    8
+   ]
+  },
+  "rationale": "棒の画素値を数値で確かめる"
+ },
+ {
+  "tool": "run_sandbox",
+  "args": {
+   "code": "\nx = A['img']; lab = A['img_labels']\nL = x.mean(1)  # luminance (N,64,64)\nfor n in range(6):\n    l = L[n]\n    thr = np.percentile(l, 99.7)\n    ys, xs = np.where(l >= thr)\n    print('label', int(lab[n]), 'bright px', len(ys), 'lum max %.2f  bg median %.2f  bright-set mean %.2f' % (l.max(), np.median(l), l[ys, xs].mean()),\n          'y-range', ys.min(), ys.max(), 'x-range', xs.min(), xs.max())\n# print a crop around the brightest pixel of one positive (id 2 -> index 2 in ids list) and one negative\nfor n in [2, 0]:\n    l = L[n]; y, xx = np.unravel_index(np.argmax(l), l.shape)\n    y0 = max(0, y-6); x0 = max(0, xx-6)\n    print('label', int(lab[n]), 'crop at', y0, x0)\n    print(np.array2string(l[y0:y0+13, x0:x0+13], precision=1, max_line_width=200))\n"
+  },
+  "rationale": "棒の明るさ・太さ・背景との差を測る"
+ },
+ {
+  "tool": "run_sandbox",
+  "args": {
+   "code": "\ndef bar(angle, length=9):\n    k = length; g = np.zeros((k, k)); c = (k - 1) / 2; t = np.deg2rad(angle)\n    for s in np.linspace(-c, c, 4 * k):\n        g[int(round(c - s * np.sin(t))), int(round(c + s * np.cos(t)))] = 1.0\n    return g\ndef corr(img, K):\n    kh = K.shape[0]; H = img.shape[0] - kh + 1\n    return np.array([[np.sum(img[i:i+kh, j:j+kh] * K) for j in range(H)] for i in range(H)])\ndef make_k(pos_w1, neg_from):\n    K = np.zeros((5, 5))\n    for i in range(5):\n        for j in range(5):\n            d = abs(i + j - 4)\n            K[i, j] = 1.0 if d == 0 else (pos_w1 if d == 1 else (-1.0 if d >= neg_from else 0.0))\n    neg = K < 0\n    K[neg] = -K[~neg].sum() / neg.sum()   # zero-sum: uniform regions give 0\n    return K\nfor name, K in [('A: d0=+1, |d|>=2 neg', make_k(0.0, 2)), ('B: d0=+1,|d|1=+.5,|d|>=2 neg', make_k(0.5, 2)), ('C: d0=+1,|d|1=+.5,|d|>=3 neg', make_k(0.5, 3))]:\n    rows = []\n    for sc in (1, 2, 3):\n        r = []\n        for ang in (45, 90, 135, 180):\n            b = np.kron(bar(ang), np.ones((sc, sc)))\n            img = np.zeros((b.shape[0] + 8, b.shape[0] + 8)); img[4:-4, 4:-4] = b\n            r.append(corr(img, K).max())\n        rows.append('scale%d: 45=%.2f 90=%.2f 135=%.2f 0=%.2f' % (sc, r[0], r[1], r[2], r[3]))\n    # step edge along '/' (like a circle boundary) with contrast 1\n    e = np.fromfunction(lambda i, j: (i + j <= 10).astype(float), (16, 16))\n    print(name, '| L2=%.2f' % np.sqrt((K**2).sum()), '| step-edge(/)=%.2f' % corr(e, K).max())\n    print('   ' + ' ; '.join(rows))\n"
+  },
+  "rationale": "自分で描いた合成の棒で、45°線検出カーネル案の方位選択性を比べる（データへの当てはめはしない）"
+ },
+ {
+  "tool": "capture_activations",
+  "args": {
+   "layer": "input",
+   "key": "tr",
+   "split": "train"
+  },
+  "rationale": "設計案を train 全体で試算するため入力を取得"
+ },
+ {
+  "tool": "run_sandbox",
+  "args": {
+   "code": "\nx = A['tr']; lab = A['tr_labels']\nL = x.mean(1)\ndef kern(kind):\n    K = np.zeros((5, 5))\n    for i in range(5):\n        for j in range(5):\n            d = {'45': i + j - 4, '135': i - j, '0': i - 2, '90': j - 2}[kind]\n            K[i, j] = 1.0 if d == 0 else (-1.0 if abs(d) >= 2 else 0.0)\n    neg = K < 0\n    K[neg] = -K[~neg].sum() / neg.sum()\n    return K\ndef conv_same(img, K):  # img (N,H,W), 'same' correlation with zero pad\n    k = K.shape[0]; p = k // 2\n    P = np.pad(img, ((0, 0), (p, p), (p, p)))\n    H, Wd = img.shape[1:]\n    return sum(K[i, j] * P[:, i:i+H, j:j+Wd] for i in range(k) for j in range(k))\ndef pool2(a):\n    n, h, w = a.shape\n    return a[:, :h//2*2, :w//2*2].reshape(n, h//2, 2, w//2, 2).max((2, 4))\ndef auroc(s, y):\n    order = np.argsort(s); r = np.empty(len(s)); r[order] = np.arange(1, len(s) + 1)\n    n1 = y.sum(); n0 = len(y) - n1\n    return (r[y == 1].sum() - n1 * (n1 + 1) / 2) / (n1 * n0)\nR = {k: conv_same(L, kern(k)) for k in ('45', '135', '0', '90')}\nm45 = R['45'].reshape(len(L), -1).max(1)\nprint('conv1-only global max of /-detector: AUROC=%.3f  pos median %.2f  neg median %.2f' % (auroc(m45, lab), np.median(m45[lab==1]), np.median(m45[lab==0])))\nfor b1 in (0.5, 1.0, 1.5):\n    for opp in (0.0, 1.0):\n        r = np.maximum(R['45'] - opp * np.maximum(np.maximum(R['135'], R['0']), R['90']) - b1, 0)\n        p1 = pool2(r)\n        # conv2: chain along '/' on pooled grid: taps (0,2),(1,1),(2,0)\n        P = np.pad(p1, ((0,0),(1,1),(1,1))); H = p1.shape[1]\n        c2 = P[:, 0:H, 2:H+2] + P[:, 1:H+1, 1:H+1] + P[:, 2:H+2, 0:H]\n        for b2 in (0.0, 1.0):\n            g = np.maximum(c2 - b2, 0).reshape(len(L), -1).max(1)\n            print('b1=%.1f opp=%.0f b2=%.1f -> train AUROC %.3f' % (b1, opp, b2, auroc(g, lab)))\n"
+  },
+  "rationale": "方位検出→対抗抑制→共線連結→全域max の手設計パイプラインを train で試算（少数の手設計案の比較のみ、当てはめなし）"
+ },
+ {
+  "tool": "hypothesis",
+  "args": {
+   "statement": "正例を正例たらしめているのは『暗い背景の上の、明るく細い（幅1〜2px）直線が左下から右上へ（/ 方向）伸びていること』。色は無関係（棒の色はランダム）で、輝度だけで決まる。負例の棒は同じ明るさ・細さで、向きだけが —・|・\\ と違う。既存のconv1/conv3にはこれを表すチャネルがない（channel_statsで正のd'は最大でも+0.16）。",
+   "positive_evidence": "train正例16枚すべてで、明るい細線が / 方向。画素値では棒の輝度0.6〜0.9、背景0.1〜0.2、1画素幅の完全な斜め階段（step 8 の crop）。",
+   "negative_evidence": "train負例16枚では、同様の細線が水平・垂直・\\ 方向。色や大図形（円・四角・三角）は正負で同じように現れる。",
+   "edit_plan": "conv1 に5×5の『/ 方向の線検出器』を1チャネル追加する。RGB等重み（輝度）、反対角線（i+j=4）を+1、そこから2画素以上離れた画素を負（総和0で一様な領域には反応しない）、bias=-1.0 で弱い反応を切る。出力側の重みは0なので、この編集だけでは予測は変わらない。",
+   "prediction": "dev AUROC は 0.500 のまま、元の精度も 1.000 のまま。新チャネル conv1[8] の channel_stats は d' が大きな正（+1.5以上）になり、feature map では / の棒の上だけが光る。"
+  }
+ },
+ {
+  "tool": "add_channel",
+  "args": {
+   "layer": "conv1",
+   "kernel": [
+    [
+     [
+      -0.138889,
+      -0.138889,
+      -0.138889,
+      0.0,
+      0.333333
+     ],
+     [
+      -0.138889,
+      -0.138889,
+      0.0,
+      0.333333,
+      0.0
+     ],
+     [
+      -0.138889,
+      0.0,
+      0.333333,
+      0.0,
+      -0.138889
+     ],
+     [
+      0.0,
+      0.333333,
+      0.0,
+      -0.138889,
+      -0.138889
+     ],
+     [
+      0.333333,
+      0.0,
+      -0.138889,
+      -0.138889,
+      -0.138889
+     ]
+    ],
+    [
+     [
+      -0.138889,
+      -0.138889,
+      -0.138889,
+      0.0,
+      0.333333
+     ],
+     [
+      -0.138889,
+      -0.138889,
+      0.0,
+      0.333333,
+      0.0
+     ],
+     [
+      -0.138889,
+      0.0,
+      0.333333,
+      0.0,
+      -0.138889
+     ],
+     [
+      0.0,
+      0.333333,
+      0.0,
+      -0.138889,
+      -0.138889
+     ],
+     [
+      0.333333,
+      0.0,
+      -0.138889,
+      -0.138889,
+      -0.138889
+     ]
+    ],
+    [
+     [
+      -0.138889,
+      -0.138889,
+      -0.138889,
+      0.0,
+      0.333333
+     ],
+     [
+      -0.138889,
+      -0.138889,
+      0.0,
+      0.333333,
+      0.0
+     ],
+     [
+      -0.138889,
+      0.0,
+      0.333333,
+      0.0,
+      -0.138889
+     ],
+     [
+      0.0,
+      0.333333,
+      0.0,
+      -0.138889,
+      -0.138889
+     ],
+     [
+      0.333333,
+      0.0,
+      -0.138889,
+      -0.138889,
+      -0.138889
+     ]
+    ]
+   ],
+   "bias": -1.0
+  },
+  "rationale": "45°線検出器（輝度・中心+/側方-・総和0）を追加"
+ },
+ {
+  "tool": "evaluate",
+  "args": {
+   "split": "dev"
+  },
+  "rationale": "構造的な編集で予測が変わらないことの確認"
+ },
+ {
+  "tool": "channel_stats",
+  "args": {
+   "layer": "conv1",
+   "split": "train"
+  },
+  "rationale": "新チャネルの選択性"
+ },
+ {
+  "tool": "feature_map",
+  "args": {
+   "layer": "conv1",
+   "channel": 8,
+   "ids": [
+    2,
+    3,
+    6,
+    8,
+    0,
+    1,
+    4,
+    5
+   ],
+   "split": "train"
+  },
+  "rationale": "正例4枚・負例4枚で反応位置を見る"
+ },
+ {
+  "tool": "decide",
+  "args": {
+   "verdict": "accept",
+   "reason": "予測どおり。dev AUROC 0.500・元の精度1.000は不変、conv1[8] は d'=+1.82（正例の平均最大2.01、負例0.14）で既存の全チャネル（最大+0.14）を大きく上回る。feature map では正例4枚の / の棒の上だけが赤く光り、負例の —・| の棒、円・四角の縁には反応しない。"
+  }
+ },
+ {
+  "tool": "hypothesis",
+  "args": {
+   "statement": "私が『棒』と認識するとき、1点の明るさではなく、/ 方向に点が並んで連続していること（共線性）を見ている。conv1[8] の反応を / 方向に3点（プール後の格子で右上・中央・左下）足し合わせれば、棒の上では強く、ノイズや短い斜めの縁の孤立した反応では弱くなる。",
+   "positive_evidence": "feature map（step 16）で、正例の棒の上では conv1[8] が棒の長さ（9px以上）にわたって連続して光る。",
+   "negative_evidence": "負例で conv1[8] が反応するのは孤立した点（id5 で最大0.10）だけ。",
+   "edit_plan": "conv2 に1チャネル追加。入力 conv1[8] のスライスだけ、3×3の反対角線（(0,2),(1,1),(2,0)）を1.0、他の入力は0、bias=-1.0。出力側の重みは0。",
+   "prediction": "dev AUROC 0.500・元の精度1.000は不変。conv2[16] の d' は conv1[8] と同等以上（+1.8以上）。"
+  }
+ },
+ {
+  "tool": "add_channel",
+  "args": {
+   "layer": "conv2",
+   "kernel": [
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      1.0
+     ],
+     [
+      0.0,
+      1.0,
+      0.0
+     ],
+     [
+      1.0,
+      0.0,
+      0.0
+     ]
+    ]
+   ],
+   "bias": -1.0
+  },
+  "rationale": "共線性（/方向に連続）を conv2 で集める"
+ },
+ {
+  "tool": "evaluate",
+  "args": {
+   "split": "dev"
+  },
+  "rationale": "構造的編集の確認"
+ },
+ {
+  "tool": "channel_stats",
+  "args": {
+   "layer": "conv2",
+   "split": "train"
+  },
+  "rationale": "新チャネルの選択性"
+ },
+ {
+  "tool": "top_activations",
+  "args": {
+   "layer": "conv2",
+   "channel": 16,
+   "k": 12,
+   "split": "train"
+  },
+  "rationale": "どんなパッチで最大反応するか"
+ },
+ {
+  "tool": "decide",
+  "args": {
+   "verdict": "accept",
+   "reason": "dev AUROC 0.500・元の精度1.000は不変。d'=+1.76 は予測（+1.8以上）をわずかに下回ったが、これは正例側の反応の幅が広がったためで、分離そのものは良くなった：負例の平均最大反応は conv1[8] の0.14から0.003へほぼ0になり、上位12パッチはすべて正例の / の棒だった。採用する。"
+  }
+ },
+ {
+  "tool": "hypothesis",
+  "args": {
+   "statement": "『画像のどこかに / の棒がある』は位置によらない判断なので、conv2[16] の反応をそのまま conv3 に通し、global max pool で画像全体の最大値を取れば、その値がそのまま概念の有無を表す。",
+   "positive_evidence": "conv2[16] は正例で平均最大4.38、上位12枚がすべて正例。",
+   "negative_evidence": "conv2[16] は負例で平均最大0.003（ほぼ無反応）。",
+   "edit_plan": "conv3 に1チャネル追加。入力 conv2[16] のスライスの中心だけ1.0（恒等の受け渡し）、他は0、bias=0。出力側（head）の重みは0。",
+   "prediction": "dev AUROC 0.500・元の精度1.000は不変。conv3[32] の d' は +1.7 前後で、負例の反応はほぼ0。"
+  }
+ },
+ {
+  "tool": "add_channel",
+  "args": {
+   "layer": "conv3",
+   "kernel": [
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      1.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ]
+   ],
+   "bias": 0.0
+  },
+  "rationale": "conv2[16] を conv3 にそのまま通す"
+ },
+ {
+  "tool": "evaluate",
+  "args": {
+   "split": "dev"
+  },
+  "rationale": "構造的編集の確認"
+ },
+ {
+  "tool": "channel_stats",
+  "args": {
+   "layer": "conv3",
+   "split": "dev"
+  },
+  "rationale": "devでの新チャネルの選択性（dev は読めるが heldout は読めない）"
+ },
+ {
+  "tool": "decide",
+  "args": {
+   "verdict": "accept",
+   "reason": "予測どおり。dev で conv3[32] は正例の平均最大4.38、負例0.006、d'=+1.72。dev AUROC・元の精度は不変。"
+  }
+ },
+ {
+  "tool": "hypothesis",
+  "args": {
+   "statement": "conv3[32]（global max 後）は『/ の棒がある』ことの強さそのもの。これを head_concept に正の重みでつなげば、概念ロジットが棒の有無を表す。既存の32チャネルはつながないので、元の3クラス分類には一切影響しない。",
+   "positive_evidence": "dev の正例で conv3[32] の平均最大4.38。",
+   "negative_evidence": "dev の負例で conv3[32] の平均最大0.006。",
+   "edit_plan": "connect(conv3[32] -> head_concept[0], 重み1.0)。",
+   "prediction": "dev AUROC が 0.500 から 0.97 以上に上がる。元の精度は1.000のまま（head_base は触らない）。"
+  }
+ },
+ {
+  "tool": "connect",
+  "args": {
+   "src_layer": "conv3",
+   "src_channel": 32,
+   "dst": "head_concept",
+   "dst_channel": 0,
+   "values": [
+    1.0
+   ]
+  },
+  "rationale": "検出器を概念ヘッドへ"
+ },
+ {
+  "tool": "evaluate",
+  "args": {
+   "split": "dev"
+  },
+  "rationale": "検証"
+ },
+ {
+  "tool": "decide",
+  "args": {
+   "verdict": "accept",
+   "reason": "予測（0.97以上）どおり dev AUROC 0.500→0.981、元の精度1.000のまま。採用。ただし train での試算（1.000）より低いので、取りこぼしを調べる。"
+  }
+ },
+ {
+  "tool": "capture_activations",
+  "args": {
+   "layer": "conv3",
+   "key": "d3",
+   "split": "dev"
+  },
+  "rationale": "dev の誤りの所在を調べる"
+ },
+ {
+  "tool": "run_sandbox",
+  "args": {
+   "code": "\nc = A['d3'][:, 32].reshape(len(A['d3']), -1).max(1); y = A['d3_labels']\npos = np.where(y == 1)[0]; neg = np.where(y == 0)[0]\nprint('positives with score < 1.0:', len(pos[c[pos] < 1.0]), 'of', len(pos))\nlowp = pos[np.argsort(c[pos])][:10]\nprint('lowest positives (id, score):', [(int(i), round(float(c[i]), 2)) for i in lowp])\nhighn = neg[np.argsort(-c[neg])][:8]\nprint('highest negatives (id, score):', [(int(i), round(float(c[i]), 2)) for i in highn])\nprint('negatives with score > 0:', int((c[neg] > 0).sum()), 'of', len(neg))\n"
+  },
+  "rationale": "取りこぼした正例・誤反応した負例を特定"
+ },
+ {
+  "tool": "feature_map",
+  "args": {
+   "layer": "conv1",
+   "channel": 8,
+   "ids": [
+    57,
+    111,
+    296,
+    352,
+    349,
+    305,
+    282,
+    157
+   ],
+   "split": "dev"
+  },
+  "rationale": "取りこぼした正例を見る"
+ },
+ {
+  "tool": "note",
+  "args": {
+   "text": "観察：dev の取りこぼし（正例で conv3[32]=0）は8枚とも、棒が明るい図形（四角・円・三角）の上に乗っている例。図形の上では棒と周囲の輝度差が0.15〜0.25しかなく、conv1[8] の応答（最大0.12〜0.54）が bias -1.0 で切られている。私自身はこれらの棒も見えるが、それは輝度差が小さくても『細い線として周囲と違う』『色相が違う』ことに気づくから。"
+  }
+ },
+ {
+  "tool": "capture_activations",
+  "args": {
+   "layer": "input",
+   "key": "dv",
+   "split": "dev"
+  },
+  "rationale": "閾値と色チャネルの手設計案を dev で比べるため"
+ },
+ {
+  "tool": "run_sandbox",
+  "args": {
+   "code": "\ndef K45():\n    K = np.zeros((5, 5))\n    for i in range(5):\n        for j in range(5):\n            d = i + j - 4\n            K[i, j] = 1.0 if d == 0 else (-1.0 if abs(d) >= 2 else 0.0)\n    neg = K < 0; K[neg] = -K[~neg].sum() / neg.sum(); return K\ndef conv_same(img, K):\n    k = K.shape[0]; p = k // 2\n    P = np.pad(img, ((0, 0), (p, p), (p, p))); H, Wd = img.shape[1:]\n    return sum(K[i, j] * P[:, i:i+H, j:j+Wd] for i in range(k) for j in range(k))\ndef pool2(a):\n    n, h, w = a.shape\n    return a[:, :h//2*2, :w//2*2].reshape(n, h//2, 2, w//2, 2).max((2, 4))\ndef chain(p1):\n    P = np.pad(p1, ((0,0),(1,1),(1,1))); H = p1.shape[1]\n    return P[:, 0:H, 2:H+2] + P[:, 1:H+1, 1:H+1] + P[:, 2:H+2, 0:H]\ndef auroc(s, y):\n    order = np.argsort(s, kind='stable'); r = np.empty(len(s)); r[order] = np.arange(1, len(s) + 1)\n    # average ranks for ties\n    vals = s[order]; i = 0\n    while i < len(s):\n        j = i\n        while j + 1 < len(s) and vals[j + 1] == vals[i]:\n            j = j + 1\n        r[order[i:j+1]] = (i + j) / 2 + 1; i = j + 1\n    n1 = y.sum(); n0 = len(y) - n1\n    return (r[y == 1].sum() - n1 * (n1 + 1) / 2) / (n1 * n0)\nK = K45()\nfor name, xs in [('train', A['tr']), ('dev', A['dv'])]:\n    y = A['tr_labels'] if name == 'train' else A['dv_labels']\n    Rl = conv_same(xs.mean(1), K)\n    Rc = [conv_same(xs[:, c], K) for c in range(3)]\n    for b1 in (1.0, 0.6, 0.3):\n        for mode in ('lum', 'lum+rgb'):\n            r = np.maximum(Rl - b1, 0)\n            if mode == 'lum+rgb':\n                r = r + sum(np.maximum(R * 1.0 - 3 * b1 / 3 * 1.0 - 0.0, 0) * 0 + np.maximum(R / 3 - b1 / 3, 0) for R in Rc)\n            for b2 in (1.0, 2.0):\n                g = np.maximum(chain(pool2(r)) - b2, 0).reshape(len(y), -1).max(1)\n                print('%s b1=%.1f %s b2=%.1f AUROC %.4f' % (name, b1, mode, b2, auroc(g, y)))\n"
+  },
+  "rationale": "conv1[8] の閾値（bias）を下げる案と、RGB 各チャネルの線検出を足す案を試算"
+ },
+ {
+  "tool": "hypothesis",
+  "args": {
+   "statement": "取りこぼしの原因は検出器の形ではなく閾値。図形の上の低コントラストの棒（輝度差0.15〜0.25）でも / 方向の線としての応答は出ているが、bias -1.0 で切られている。閾値を背景ノイズの約3σ（カーネルのL2 2.66 × 輝度ノイズ0.07 ≈ 0.18、その3倍で約0.55）まで下げれば拾える。孤立したノイズ点は conv2 の共線連結で抑えられる。",
+   "positive_evidence": "dev の取りこぼし8枚はすべて、図形の上の / の棒（step 35）。conv1[8] の生の応答は0.12〜0.54 出ている。",
+   "negative_evidence": "負例で conv3[32] が0より大きいのは208枚中7枚だけ（最大0.63）。閾値を下げても、共線連結の bias -1.0 が残る。",
+   "edit_plan": "conv1.bias[8] を -1.0 から -0.6 に変える（それ以外は変えない）。値はノイズの3σという理由で決め、dev の試算で一番良かった値（-0.3）は採らない。",
+   "prediction": "dev AUROC が 0.981 から 0.99 以上に上がる。元の精度は1.000のまま。"
+  }
+ },
+ {
+  "tool": "set_weights",
+  "args": {
+   "name": "conv1.bias",
+   "index": [
+    8
+   ],
+   "values": [
+    -0.6
+   ]
+  },
+  "rationale": "検出の閾値をノイズの約3σへ"
+ },
+ {
+  "tool": "evaluate",
+  "args": {
+   "split": "dev"
+  },
+  "rationale": "（直前の編集がエラーで適用されていなかったことの確認になった）"
+ },
+ {
+  "tool": "set_weights",
+  "args": {
+   "name": "conv1.bias",
+   "index": [
+    8
+   ],
+   "values": -0.6
+  },
+  "rationale": "同じ編集を、0次元の要素に合うスカラー値で再実行"
+ },
+ {
+  "tool": "evaluate",
+  "args": {
+   "split": "dev"
+  },
+  "rationale": "検証"
+ },
+ {
+  "tool": "decide",
+  "args": {
+   "verdict": "accept",
+   "reason": "予測（0.99以上）どおり dev AUROC 0.981→0.996、元の精度1.000のまま。採用。"
+  }
+ },
+ {
+  "tool": "capture_activations",
+  "args": {
+   "layer": "conv3",
+   "key": "d3b",
+   "split": "dev"
+  },
+  "rationale": "残った誤りを調べる"
+ },
+ {
+  "tool": "run_sandbox",
+  "args": {
+   "code": "\nc = A['d3b'][:, 32].reshape(len(A['d3b']), -1).max(1); y = A['d3b_labels']\npos = np.where(y == 1)[0]; neg = np.where(y == 0)[0]\nlowp = pos[np.argsort(c[pos])][:8]\nprint('lowest positives (id, score):', [(int(i), round(float(c[i]), 2)) for i in lowp])\nhighn = neg[np.argsort(-c[neg])][:8]\nprint('highest negatives (id, score):', [(int(i), round(float(c[i]), 2)) for i in highn])\nprint('positives score==0:', int((c[pos] == 0).sum()), ' negatives score>0:', int((c[neg] > 0).sum()))\n"
+  },
+  "rationale": "残りの誤りの特定"
+ },
+ {
+  "tool": "feature_map",
+  "args": {
+   "layer": "conv2",
+   "channel": 16,
+   "ids": [
+    257,
+    275,
+    357,
+    228,
+    349,
+    352,
+    282,
+    111
+   ],
+   "split": "dev"
+  },
+  "rationale": "誤反応した負例4枚と、まだ弱い正例4枚を並べて見る"
+ },
+ {
+  "tool": "note",
+  "args": {
+   "text": "観察（step 47）：誤反応した負例の上位4枚はすべて、太く明るい \\ （135°）の棒。/ 検出器は \\ の棒にも弱く反応し（太い棒では中心と両隣の対角が埋まるため）、閾値を下げたことで棒に沿って連続した弱い応答が共線連結を通ってしまう。私が \\ を見て『/ ではない』と即座に判断できるのは、反対の向きがはっきり見えるから。つまり向き同士の競合（対抗抑制）を使っている。"
+  }
+ },
+ {
+  "tool": "run_sandbox",
+  "args": {
+   "code": "\ndef K(kind):\n    M = np.zeros((5, 5))\n    for i in range(5):\n        for j in range(5):\n            d = (i + j - 4) if kind == '45' else (i - j)\n            M[i, j] = 1.0 if d == 0 else (-1.0 if abs(d) >= 2 else 0.0)\n    neg = M < 0; M[neg] = -M[~neg].sum() / neg.sum(); return M\ndef conv_same(img, M):\n    k = M.shape[0]; p = k // 2\n    P = np.pad(img, ((0, 0), (p, p), (p, p))); H, Wd = img.shape[1:]\n    return sum(M[i, j] * P[:, i:i+H, j:j+Wd] for i in range(k) for j in range(k))\ndef pool2(a):\n    n, h, w = a.shape\n    return a[:, :h//2*2, :w//2*2].reshape(n, h//2, 2, w//2, 2).max((2, 4))\ndef taps(p1, T):\n    P = np.pad(p1, ((0,0),(1,1),(1,1))); H = p1.shape[1]\n    return sum(T[i, j] * P[:, i:i+H, j:j+H] for i in range(3) for j in range(3))\ndef auroc(s, y):\n    s = s + 1e-9 * np.arange(len(s)) * 0\n    pos = s[y == 1]; neg = s[y == 0]\n    gt = (pos[:, None] > neg[None, :]).mean(); eq = (pos[:, None] == neg[None, :]).mean()\n    return gt + 0.5 * eq\nxs = A['dv']; y = A['dv_labels']; L = xs.mean(1)\nr45 = pool2(np.maximum(conv_same(L, K('45')) - 0.6, 0))\nr135 = pool2(np.maximum(conv_same(L, K('135')) - 0.6, 0))\nchainT = np.zeros((3, 3)); chainT[0, 2] = chainT[1, 1] = chainT[2, 0] = 1.0\nfor name, inhT in [('none', np.zeros((3, 3))), ('center -1', np.pad([[-1.0]], 1)), ('3x3 all -0.5', -0.5 * np.ones((3, 3))), ('3x3 all -1', -np.ones((3, 3)))]:\n    g = np.maximum(taps(r45, chainT) + taps(r135, inhT) - 1.0, 0).reshape(len(y), -1).max(1)\n    print('%-14s dev AUROC %.4f | pos==0: %d | neg>0: %d' % (name, auroc(g, y), int((g[y==1] == 0).sum()), int((g[y==0] > 0).sum())))\n"
+  },
+  "rationale": "\\ 検出器を作って conv2[16] で差し引く（対抗抑制）案を dev で試算"
+ },
+ {
+  "tool": "hypothesis",
+  "args": {
+   "statement": "向きの競合を入れるには、まず反対の向き（\\ 、135°）の線を検出するチャネルが必要。/ 検出器を左右反転したカーネル（主対角線+、2画素以上離れた画素−、総和0、輝度、bias -0.6）は、\\ の棒で強く、/ の棒ではほとんど反応しないはず。",
+   "positive_evidence": "（このチャネルにとっての正例は \\ の棒）dev の誤反応上位4枚は \\ の棒（step 47）。",
+   "negative_evidence": "/ の棒では、主対角線上に乗るのは中心1画素だけなので応答は小さい（合成の棒で試算：/ 検出器が \\ に示した応答 1.0 と対称）。",
+   "edit_plan": "conv1 に \\ 方向の線検出器を1チャネル追加（conv1[9]）。出力側は0なので予測は変わらない。",
+   "prediction": "dev AUROC 0.996・元の精度1.000は不変。conv1[9] の channel_stats は d' が負（概念の負例の方が強く反応）になる。"
+  }
+ },
+ {
+  "tool": "add_channel",
+  "args": {
+   "layer": "conv1",
+   "kernel": [
+    [
+     [
+      0.333333,
+      0.0,
+      -0.138889,
+      -0.138889,
+      -0.138889
+     ],
+     [
+      0.0,
+      0.333333,
+      0.0,
+      -0.138889,
+      -0.138889
+     ],
+     [
+      -0.138889,
+      0.0,
+      0.333333,
+      0.0,
+      -0.138889
+     ],
+     [
+      -0.138889,
+      -0.138889,
+      0.0,
+      0.333333,
+      0.0
+     ],
+     [
+      -0.138889,
+      -0.138889,
+      -0.138889,
+      0.0,
+      0.333333
+     ]
+    ],
+    [
+     [
+      0.333333,
+      0.0,
+      -0.138889,
+      -0.138889,
+      -0.138889
+     ],
+     [
+      0.0,
+      0.333333,
+      0.0,
+      -0.138889,
+      -0.138889
+     ],
+     [
+      -0.138889,
+      0.0,
+      0.333333,
+      0.0,
+      -0.138889
+     ],
+     [
+      -0.138889,
+      -0.138889,
+      0.0,
+      0.333333,
+      0.0
+     ],
+     [
+      -0.138889,
+      -0.138889,
+      -0.138889,
+      0.0,
+      0.333333
+     ]
+    ],
+    [
+     [
+      0.333333,
+      0.0,
+      -0.138889,
+      -0.138889,
+      -0.138889
+     ],
+     [
+      0.0,
+      0.333333,
+      0.0,
+      -0.138889,
+      -0.138889
+     ],
+     [
+      -0.138889,
+      0.0,
+      0.333333,
+      0.0,
+      -0.138889
+     ],
+     [
+      -0.138889,
+      -0.138889,
+      0.0,
+      0.333333,
+      0.0
+     ],
+     [
+      -0.138889,
+      -0.138889,
+      -0.138889,
+      0.0,
+      0.333333
+     ]
+    ]
+   ],
+   "bias": -0.6
+  },
+  "rationale": "反対の向き \\ の線検出器"
+ },
+ {
+  "tool": "evaluate",
+  "args": {
+   "split": "dev"
+  },
+  "rationale": "構造的編集の確認"
+ },
+ {
+  "tool": "channel_stats",
+  "args": {
+   "layer": "conv1",
+   "split": "dev"
+  },
+  "rationale": "新チャネルの向き選択性"
+ },
+ {
+  "tool": "decide",
+  "args": {
+   "verdict": "accept",
+   "reason": "予測どおり d'=-0.76（負例の方が強い）。負例の3分の1だけが \\ なので、絶対値が / 検出器より小さいのは想定内。dev AUROC・元の精度は不変。"
+  }
+ },
+ {
+  "tool": "hypothesis",
+  "args": {
+   "statement": "『/ が見えて、かつ同じ場所に \\ が見えない』ときだけ / の棒と判断する（対抗抑制）。conv2[16] で、conv1[9]（\\ 検出器）の3×3近傍を負の重みで差し引けば、太く明るい \\ の棒による誤反応が消え、/ の棒への応答はほとんど減らない。",
+   "positive_evidence": "dev の / の棒では conv1[9] の応答は小さい（正例の平均最大0.54、多くは別の場所のノイズや図形の縁）。",
+   "negative_evidence": "誤反応上位の負例（id 257, 275, 357, 228）は \\ の棒で、そこでは conv1[9] が強く反応するはず。",
+   "edit_plan": "connect(conv1[9] -> conv2[16], 3×3 すべて -1.0)。共線連結の正の重み（3タップ×1.0）を上回る強い抑制にする。dev での試算では、中心のみ-1、全体-0.5、全体-1の3案のうち全体-1が最良（0.9998）だった。",
+   "prediction": "dev AUROC が 0.996 から 0.998 以上に上がる。元の精度は1.000のまま。"
+  }
+ },
+ {
+  "tool": "connect",
+  "args": {
+   "src_layer": "conv1",
+   "src_channel": 9,
+   "dst": "conv2",
+   "dst_channel": 16,
+   "values": [
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ],
+    [
+     -1.0,
+     -1.0,
+     -1.0
+    ]
+   ]
+  },
+  "rationale": "\\ による対抗抑制"
+ },
+ {
+  "tool": "evaluate",
+  "args": {
+   "split": "dev"
+  },
+  "rationale": "検証"
+ },
+ {
+  "tool": "decide",
+  "batch_start": true,
+  "args": {
+   "verdict": "accept",
+   "reason": "予測（0.998以上）どおり dev AUROC 0.996→0.9998、元の精度1.000のまま。採用。dev はほぼ飽和したので、これ以上 dev に合わせて調整すると dev への過適合になる。ここで止める。"
+  }
+ },
+ {
+  "tool": "probe_ablate",
+  "args": {
+   "layer": "conv1",
+   "channels": [
+    9
+   ],
+   "split": "dev"
+  },
+  "rationale": "対抗抑制の寄与を因果的に確認（モデルは変えない）"
+ },
+ {
+  "tool": "probe_ablate",
+  "args": {
+   "layer": "conv1",
+   "channels": [
+    8
+   ],
+   "split": "dev"
+  },
+  "rationale": "/ 検出器が唯一の経路であることの確認"
+ },
+ {
+  "tool": "probe_ablate",
+  "args": {
+   "layer": "conv1",
+   "channels": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "split": "dev"
+  },
+  "rationale": "既存の8チャネルは概念判断に関与していないことの確認"
+ },
+ {
+  "tool": "diff",
+  "args": {
+   "tag": "initial"
+  },
+  "rationale": "最終的な変更点"
+ },
+ {
+  "tool": "submit",
+  "rationale": "提出。heldout と shift はここで初めて採点される"
+ }
+]
