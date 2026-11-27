@@ -27,6 +27,7 @@ from PIL import Image
 
 from adl.data.shapes import SPLIT_SEEDS, make_dataset
 from adl.env.budget import Budget, BudgetExceeded, Ledger
+from adl.env.guard import EDIT_TOOLS, ArgError, Guard, validate_args
 from adl.env.metrics import auroc
 from adl.env.sandbox import SandboxViolation, run_code
 from adl.models.cnn import CONV_LAYERS, EditableCNN
@@ -39,6 +40,7 @@ OBSERVATION_TOOLS = {
     "top_activations", "channel_stats", "capture_activations", "probe_ablate",
     "run_sandbox",
 }
+PROTOCOL_TOOLS = {"hypothesis", "decide"}   # offered only when a Guard is set
 VISUAL_TOOLS = {"render_kernels", "show_examples", "feature_map", "top_activations"}
 
 
@@ -99,8 +101,10 @@ class ADLEnvironment:
     def __init__(self, model: EditableCNN, splits: dict, budget: Budget | None = None,
                  ledger: Ledger | None = None, condition: str = "full",
                  forbid_fitting: bool = False, base_val_n: int = 500,
-                 device: str = "cpu", max_values_per_read: int = 2048):
+                 device: str = "cpu", max_values_per_read: int = 2048,
+                 guard: Guard | None = None):
         assert condition in {"full", "no_semantics", "no_observation"}
+        self.guard = guard
         self.model = model
         for k in self.model.params:
             self.model.params[k] = self.model.params[k].detach().to(device)
@@ -120,10 +124,17 @@ class ADLEnvironment:
         self.notes: list[str] = []
         self.submitted = False
         self.base_acc_initial = self._base_acc()
+        # protocol state (used only when a Guard is set)
+        self.seen_labels: set[int] = set()
+        self.hypothesis: dict | None = None
+        self.pending: dict | None = None   # {"stage": "verify"|"decide", "snapshot", ...}
+        self.last_eval: dict[str, float] = {}
+        self.cycles: list[dict] = []
+        self.guard_events = {"invalid_args": 0, "protocol_blocks": 0, "auto_rollbacks": 0}
 
     # ================================================================ helpers
     def available_tools(self) -> list[str]:
-        tools = [n for n in TOOL_SPECS]
+        tools = [n for n in TOOL_SPECS if n not in PROTOCOL_TOOLS or self.guard is not None]
         if self.condition == "no_observation":
             tools = [t for t in tools if t not in OBSERVATION_TOOLS]
         return tools
@@ -136,20 +147,120 @@ class ADLEnvironment:
             return res
         if self.submitted:
             return ToolResult("ERROR: already submitted")
+        try:
+            args = validate_args(self, name, args, TOOL_SPECS[name])
+        except ArgError as e:
+            self.guard_events["invalid_args"] += 1
+            res = ToolResult(f"ERROR (invalid arguments, nothing changed): {e}")
+            self.ledger.log(name, args, res.text, rationale, ["invalid_args"])
+            return res
+        block = self._protocol_block(name) if self.guard else None
+        if block:
+            self.guard_events["protocol_blocks"] += 1
+            res = ToolResult(f"BLOCKED by protocol: {block}\n{self.protocol_status()}")
+            self.ledger.log(name, args, res.text, rationale, ["protocol_block"])
+            return res
+        snapshot = self.model.state_dict() if name in EDIT_TOOLS else None
         fn = getattr(self, f"tool_{name}")
         flags: list[str] = []
+        ok = True
         try:
             with torch.no_grad():
                 res = fn(**args)
             if isinstance(res, tuple):
                 res, flags = res
         except (BudgetExceeded, ToolError, SandboxViolation) as e:
-            res = ToolResult(f"ERROR: {e}")
+            res, ok = ToolResult(f"ERROR: {e}"), False
         except Exception as e:  # surface agent mistakes as tool errors
-            res = ToolResult(f"ERROR: {type(e).__name__}: {e}")
+            res, ok = ToolResult(f"ERROR: {type(e).__name__}: {e}"), False
+        if snapshot is not None:
+            if not ok:
+                self.model.load_state_dict(snapshot)   # never leave a half-applied edit
+            elif self.guard is not None:
+                res, more = self._after_edit(name, args, res, snapshot)
+                flags = flags + more
+        if self.guard is not None and ok:
+            res = self._after_call(name, args, res)
         assert_no_grad(self.model)
         self.ledger.log(name, args, res.text, rationale, flags)
         return res
+
+    # ============================================================ protocol
+    def _protocol_block(self, name: str) -> str | None:
+        g, p = self.guard, self.pending
+        if p is not None:
+            if p["stage"] == "verify" and name in EDIT_TOOLS | {"submit", "rollback", "hypothesis", "decide"}:
+                return "the last edit is not verified yet. Call evaluate(split='dev') now."
+            if p["stage"] == "decide" and name in EDIT_TOOLS | {"submit", "rollback", "hypothesis"}:
+                return "decide on the last edit first: decide(verdict='accept'|'reject', reason=...)."
+        if name == "decide" and (p is None or p["stage"] != "decide"):
+            return "there is no evaluated edit to decide on."
+        if name in EDIT_TOOLS and g.require_hypothesis and self.hypothesis is None:
+            return ("record a hypothesis first with `hypothesis` (what label-1 images have that "
+                    "label-0 images lack, the planned edit, and the predicted evaluate result).")
+        if name == "hypothesis" and g.require_contrast and "show_examples" in self.available_tools():
+            missing = {0, 1} - self.seen_labels
+            if missing:
+                return (f"compare positives and negatives first: call show_examples with "
+                        f"label={sorted(missing)[0]} (seen so far: {sorted(self.seen_labels)}).")
+        return None
+
+    def _after_edit(self, name: str, args: dict, res: ToolResult, snapshot: dict):
+        acc = self._base_acc()
+        floor = self.base_acc_initial - self.guard.max_base_drop
+        cycle = {"hypothesis": self.hypothesis, "edit": {"tool": name, "args": args},
+                 "base_acc_after_edit": acc}
+        if acc < floor:
+            self.model.load_state_dict(snapshot)
+            self.guard_events["auto_rollbacks"] += 1
+            cycle["verdict"] = "auto_rollback"
+            self.cycles.append(cycle)
+            return ToolResult(
+                f"{res.text}\nAUTO-ROLLBACK: base accuracy fell to {acc:.4f} (initial "
+                f"{self.base_acc_initial:.4f}, allowed floor {floor:.4f}). The edit was undone; the "
+                f"model is unchanged. Your hypothesis stays active: try a smaller or different edit.",
+                res.images), ["auto_rollback"]
+        self.pending = {"stage": "verify", "snapshot": snapshot, "cycle": cycle,
+                        "eval_before": dict(self.last_eval)}
+        return ToolResult(f"{res.text}\nbase accuracy after edit: {acc:.4f} (initial "
+                          f"{self.base_acc_initial:.4f}). Next: evaluate(split='dev') to verify.",
+                          res.images), []
+
+    def _after_call(self, name: str, args: dict, res: ToolResult) -> ToolResult:
+        if name == "show_examples":
+            self.seen_labels.add(int(args.get("label", 1)))
+        elif name == "evaluate" and self.pending and self.pending["stage"] == "verify":
+            split = args.get("split", "dev")
+            cyc = self.pending["cycle"]
+            cyc["eval"] = {"split": split, "auroc_before": self.pending["eval_before"].get(split),
+                           "auroc_after": self.last_eval.get(split)}
+            self.pending["stage"] = "decide"
+            before = cyc["eval"]["auroc_before"]
+            pred = (self.hypothesis or {}).get("prediction", "")
+            res = ToolResult(f"{res.text}\nAUROC before this edit: "
+                             f"{'unknown' if before is None else f'{before:.4f}'}. Your prediction was: "
+                             f"{pred!r}. Now call decide(verdict='accept' or 'reject', reason=...).",
+                             res.images)
+        return res
+
+    def protocol_status(self) -> str:
+        if self.guard is None:
+            return ""
+        p = self.pending
+        if p is not None and p["stage"] == "verify":
+            step = "VERIFY: call evaluate(split='dev') for the edit you just made."
+        elif p is not None:
+            step = "DECIDE: call decide(verdict='accept'|'reject', reason=...)."
+        elif self.hypothesis is None:
+            need = sorted({0, 1} - self.seen_labels) if "show_examples" in self.available_tools() else []
+            step = ("OBSERVE: look at label=" + " and label=".join(map(str, need)) + " examples, then "
+                    if need else "OBSERVE / HYPOTHESISE: ") + "record a hypothesis with `hypothesis`."
+        else:
+            step = ("EDIT: make ONE small edit that tests your hypothesis "
+                    f"({self.hypothesis['statement'][:120]!r}).")
+        n_acc = sum(c.get("verdict") == "accept" for c in self.cycles)
+        return (f"[protocol] cycle {len(self.cycles) + 1}; accepted edits so far: {n_acc}; "
+                f"auto-rollbacks: {self.guard_events['auto_rollbacks']}. Next step -> {step}")
 
     def _x(self, split: str, ids=None) -> torch.Tensor:
         if split not in self.splits:
@@ -462,6 +573,7 @@ class ADLEnvironment:
         lab = self.splits[split]["y_concept"]
         _, c, _ = self._forward(x)
         acc = self._base_acc()
+        self.last_eval[split] = auroc(c, lab)
         return ToolResult(f"{split}: concept AUROC={auroc(c, lab):.4f}; base accuracy={acc:.4f} "
                           f"(initial {self.base_acc_initial:.4f}); budget remaining {self.budget.remaining()}")
 
@@ -491,6 +603,31 @@ class ADLEnvironment:
                     rows.append(f"{k}: {nz} values changed, |delta|_2={float(d.norm()):.4g}")
         return ToolResult("\n".join(rows) or "no change")
 
+    def tool_hypothesis(self, statement: str, positive_evidence: str, negative_evidence: str,
+                        edit_plan: str, prediction: str) -> ToolResult:
+        """Register the hypothesis that the next edit will test (protocol mode)."""
+        self.hypothesis = {"statement": statement, "positive_evidence": positive_evidence,
+                           "negative_evidence": negative_evidence, "edit_plan": edit_plan,
+                           "prediction": prediction}
+        self.notes.append(f"HYPOTHESIS: {statement} | plan: {edit_plan} | predicts: {prediction}")
+        return ToolResult("hypothesis recorded. Next: make ONE small edit that follows the plan.")
+
+    def tool_decide(self, verdict: str, reason: str) -> ToolResult:
+        """Accept or reject the evaluated edit. Reject restores the pre-edit weights."""
+        p = self.pending
+        cyc = p["cycle"]
+        cyc["verdict"], cyc["reason"] = verdict, reason
+        if verdict == "reject":
+            self.model.load_state_dict(p["snapshot"])
+            self.last_eval = dict(p["eval_before"])
+            msg = "rejected: the edit was undone."
+        else:
+            msg = "accepted: the edit stays."
+        self.cycles.append(cyc)
+        self.pending, self.hypothesis = None, None
+        self.notes.append(f"RESULT ({verdict}): {cyc['edit']['tool']} -> {cyc.get('eval')} ; {reason}")
+        return ToolResult(msg + " Start the next cycle: observe, then a new hypothesis.")
+
     def tool_note(self, text: str) -> ToolResult:
         self.notes.append(text)
         return ToolResult(f"noted ({len(self.notes)} notes)")
@@ -511,6 +648,13 @@ class ADLEnvironment:
                 c = torch.cat([self.model(x[i:i + 256])[1] for i in range(0, len(x), 256)]).cpu().numpy()
                 rep[f"auroc_{name}"] = auroc(c, d["y_concept"])
         rep["diff_from_initial"] = self.tool_diff("initial").text
+        rep["guard"] = self.guard.as_dict() if self.guard else None
+        rep["guard_events"] = dict(self.guard_events)
+        if self.guard:
+            rep["cycles"] = self.cycles
+            rep["cycle_verdicts"] = {v: sum(c.get("verdict") == v for c in self.cycles)
+                                     for v in ("accept", "reject", "auto_rollback")}
+            rep["unverified_edit_at_end"] = self.pending is not None
         return rep
 
 
@@ -568,5 +712,13 @@ TOOL_SPECS: dict[str, dict] = {
     "rollback": {"desc": "Restore a checkpoint ('initial' always exists).", "params": {"tag": _S}, "required": ["tag"]},
     "diff": {"desc": "What changed relative to a checkpoint.", "params": {"tag": _S}},
     "note": {"desc": "Write a note to your memory (hypotheses, results).", "params": {"text": _S}, "required": ["text"]},
+    "hypothesis": {"desc": "Register the hypothesis your next edit tests. Needs label-1 and label-0 "
+                           "examples seen. Required before every edit.",
+                   "params": {"statement": _S, "positive_evidence": _S, "negative_evidence": _S,
+                              "edit_plan": _S, "prediction": _S},
+                   "required": ["statement", "positive_evidence", "negative_evidence", "edit_plan", "prediction"]},
+    "decide": {"desc": "After evaluate: accept the edit or reject it (reject undoes it).",
+               "params": {"verdict": {"type": "string", "enum": ["accept", "reject"]}, "reason": _S},
+               "required": ["verdict", "reason"]},
     "submit": {"desc": "Finish. Current weights are scored on sealed data.", "params": {}},
 }

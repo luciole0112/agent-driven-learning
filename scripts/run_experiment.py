@@ -23,6 +23,7 @@ from adl.baselines import methods as B
 from adl.data.shapes import ConceptSpec, make_splits
 from adl.env.budget import Budget, Ledger
 from adl.env.environment import ADLEnvironment
+from adl.env.guard import Guard
 from adl.models.cnn import EditableCNN
 from adl.train_base import train_base
 
@@ -61,6 +62,10 @@ def main() -> None:
                              "backprop_head", "backprop_channel", "backprop_full", "agent"])
     ap.add_argument("--condition", default="full", choices=["full", "no_semantics", "no_observation"])
     ap.add_argument("--forbid-fitting", action="store_true")
+    ap.add_argument("--no-guard", action="store_true",
+                    help="agent only: disable auto-rollback and the fixed edit protocol (old behaviour)")
+    ap.add_argument("--max-base-drop", type=float, default=0.02,
+                    help="agent only: auto-rollback an edit that drops base accuracy this far below initial")
     ap.add_argument("--forward-budget", type=int, default=200)
     ap.add_argument("--eval-budget", type=int, default=60)
     ap.add_argument("--max-turns", type=int, default=150)
@@ -80,7 +85,8 @@ def main() -> None:
     if a.method == "agent":
         from adl.agent.loop import run_agent
         env = ADLEnvironment(base, splits, budget, Ledger(run_dir / "ledger.jsonl"),
-                             condition=a.condition, forbid_fitting=a.forbid_fitting)
+                             condition=a.condition, forbid_fitting=a.forbid_fitting,
+                             guard=None if a.no_guard else Guard(max_base_drop=a.max_base_drop))
         report = run_agent(env, max_turns=a.max_turns, transcript_path=str(run_dir / "transcript.json"))
     else:
         fns = {
@@ -101,7 +107,7 @@ def main() -> None:
     report.update({"method": a.method, "concept": a.concept, "concept_seed": a.concept_seed,
                    "seed": a.seed, "n_train": a.n_train, "wall_s": round(time.time() - t0, 1)})
     (run_dir / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
-    print(json.dumps({k: v for k, v in report.items() if k != "diff_from_initial"}, indent=2))
+    print(json.dumps({k: v for k, v in report.items() if k not in ("diff_from_initial", "cycles")}, indent=2))
 
 
 if __name__ == "__main__":
