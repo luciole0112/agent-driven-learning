@@ -76,7 +76,7 @@ def example_images(report: dict, ledger: list[dict]) -> dict[int, tuple[list[int
         m = re.search(r"ids=\[([0-9, ]*)\]", e["result_summary"])
         lab = int(e["args"].get("label", 1))
         if m and lab not in out and m.group(1).strip():
-            ids = [int(i) for i in m.group(1).split(",")]
+            ids = [int(i) for i in m.group(1).split(",")][:10]
             tiles = [train["x"][i].transpose(1, 2, 0) for i in ids]
             out[lab] = (ids, b64png(_png(_grid(tiles, ncol=len(tiles), pad=2), 3)))
     return out
@@ -116,7 +116,8 @@ def chart(ledger: list[dict], n_turns: int) -> str:
                      f'<path d="M{x(e["step"]) - 4:.1f},{sy - 4} l8,8 M{x(e["step"]) + 4:.1f},{sy - 4} l-8,8" class="{cls}"/>')
             parts.append(f'<g class="hit"><title>{tip}</title><rect x="{x(e["step"]) - 7:.1f}" y="{sy - 8}" '
                          f'width="14" height="16" fill="transparent"/>{shape}</g>')
-    for idx, cls, label in ((1, "s1", "概念AUROC（train）"), (2, "s2", "元の3クラス精度")):
+    sp_name = "・".join(sorted({sp for *_, sp in evals})) or "train"
+    for idx, cls, label in ((1, "s1", f"概念AUROC（{sp_name}）"), (2, "s2", "元の3クラス精度")):
         pts = " ".join(f"{x(t):.1f},{y(v[idx - 1]):.1f}" for t, *v in [(s, a, b) for s, a, b, _ in evals])
         parts.append(f'<polyline points="{pts}" class="line {cls}"/>')
         for s, a, b, sp in evals:
@@ -129,7 +130,7 @@ def chart(ledger: list[dict], n_turns: int) -> str:
             v = a if idx == 1 else b
             parts.append(f'<text x="{x(s) + 10:.1f}" y="{y(v) + 4:.1f}" class="dlabel">{label} {v:.3f}</text>')
     parts.append("</svg>")
-    legend = ('<div class="legend"><span><i class="sw s1"></i>概念AUROC（Agentが見たtrain）</span>'
+    legend = (f'<div class="legend"><span><i class="sw s1"></i>概念AUROC（Agentが評価した{sp_name}）</span>'
               '<span><i class="sw s2"></i>元の3クラス精度（base_val）</span>'
               '<span><i class="sq ok"></i>編集（成功）</span><span><i class="sq err">×</i>編集（エラー）</span></div>')
     return legend + "".join(parts)
@@ -230,6 +231,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", required=True)
     ap.add_argument("--compare", nargs="*", default=[])
+    ap.add_argument("--compare-labels", nargs="*", default=[], help="column names for --compare runs")
     ap.add_argument("--analysis", help="HTML fragment with the hand-written analysis")
     ap.add_argument("--title", default="ADL 実験記録")
     ap.add_argument("--model", default="bonsai-2:9b")
@@ -247,7 +249,8 @@ def main() -> None:
     def method_name(r):
         return {"es": "ES（進化戦略）", "agent": "Agent"}.get(r.get("method"), r.get("method"))
 
-    runs = [(f"Agent（{a.model}）", rep)] + [(method_name(r), r) for _, r in comps]
+    labels = a.compare_labels + [None] * len(comps)
+    runs = [(f"Agent（{a.model}）", rep)] + [(lab or method_name(r), r) for lab, (_, r) in zip(labels, comps)]
     es = next((r for _, r in comps if r.get("method") == "es"), None)
     tiles = [
         ("AUROC heldout（封印データ）", f"{rep['auroc_heldout']:.3f}",
@@ -287,7 +290,7 @@ Agent がツールで内部を観察し、重みを直接編集する。<code>he
 
 <h2>精度の推移</h2>
 <div class="panel">{chart(ledger, n_turns)}</div>
-<p class="note">点は evaluate を呼んだターンだけにある。AUROC は Agent が評価に使った train 分割の値。点や編集の印にマウスを載せると詳細が出る。</p>
+<p class="note">点は evaluate を呼んだターンだけにある。AUROC は Agent が evaluate で使った分割の値。棄却した編集は元に戻されているので、線は累積の変化ではない。点や編集の印にマウスを載せると詳細が出る。</p>
 
 {analysis}
 
@@ -297,7 +300,7 @@ Agent がツールで内部を観察し、重みを直接編集する。<code>he
 
 <h2>ツールの使用回数</h2>
 <div class="two"><div>{tool_counts(ledger)}</div><div>
-<h3>ES との比較</h3>{compare_table(runs)}
+<h3>比較</h3>{compare_table(runs)}
 <p class="note">ES は dev 分割で 200 回の順伝播を使う。Agent は train 分割しか評価に使っていない。</p></div></div>
 
 <h2>最終モデルの差分（初期との比較）</h2>
