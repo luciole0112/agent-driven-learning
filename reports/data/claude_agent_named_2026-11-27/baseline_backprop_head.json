@@ -1,0 +1,31 @@
+{
+  "base_acc_initial": 1.0,
+  "base_acc_final": 1.0,
+  "budget_used": {
+    "forward_passes": 0,
+    "evaluations": 0,
+    "weight_values_read": 0,
+    "sandbox_runs": 0,
+    "edits": 0
+  },
+  "n_params": 6548,
+  "audit_flags": [],
+  "condition": "full",
+  "auroc_train": 0.8551378446115289,
+  "auroc_dev": 0.818184094551282,
+  "auroc_heldout": 0.7768139969805095,
+  "auroc_shift": 0.9135618718391908,
+  "diff_from_initial": "no change",
+  "guard": null,
+  "guard_events": {
+    "invalid_args": 0,
+    "protocol_blocks": 0,
+    "auto_rollbacks": 0
+  },
+  "method": "backprop_head",
+  "concept": "named",
+  "concept_seed": 0,
+  "seed": 0,
+  "n_train": 200,
+  "wall_s": 2.3
+}
