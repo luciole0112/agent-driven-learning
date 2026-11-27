@@ -5,6 +5,7 @@ LLM/VLM を基盤とする Agent が、CNN の内部表現を観察・分析・�
 - 研究方針：[docs/research_plan_v1.md](docs/research_plan_v1.md)
 - 先行研究と成立可能性の報告：[docs/feasibility_report_v1.md](docs/feasibility_report_v1.md)
 - Stage 0 の比較手法の予備結果：[docs/stage0_baselines.md](docs/stage0_baselines.md)
+- パイロット実行手順（8GB GPU）：[docs/pilot_guide.md](docs/pilot_guide.md)
 
 ## 中心の問い
 
@@ -33,14 +34,14 @@ Agent は、勾配を使わずに、**自分も名前を知らない特徴**を�
 
 ```bash
 docker compose up -d ollama
-docker compose exec ollama ollama pull qwen3.8:27b   # VRAM に合わせてモデルを選ぶ
+docker compose exec ollama ollama pull bonsai-2:9b   # 8GB GPU の既定。VRAM に合わせて変更可
 docker compose run --rm adl pytest -q
 
 # 比較手法（LLM 不要）
 docker compose run --rm adl python scripts/run_experiment.py --concept glyph --method es
 
 # Agent
-docker compose run --rm -e ADL_LLM_MODEL=qwen3.8:27b adl \
+docker compose run --rm -e ADL_LLM_MODEL=bonsai-2:9b adl \
   python scripts/run_experiment.py --concept named --method agent --condition full
 ```
 

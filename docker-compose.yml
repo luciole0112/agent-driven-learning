@@ -1,13 +1,19 @@
 # Usage (WSL2 + Docker Desktop, NVIDIA GPU):
 #   docker compose up -d ollama
-#   docker compose exec ollama ollama pull qwen3.8:27b     # or another vision+tools model
+#   docker compose exec ollama ollama pull bonsai-2:9b     # or another vision+tools model
 #   docker compose run --rm adl pytest -q
+#   docker compose run --rm adl python scripts/check_llm.py
 #   docker compose run --rm adl python scripts/run_experiment.py --method agent
 services:
   ollama:
     image: ollama/ollama:latest
     ports: ["11434:11434"]
     volumes: ["ollama:/root/.ollama"]
+    environment:
+      # Agent sessions carry many images and tool results; Ollama's default
+      # context is too short. 16K fits a 9B model in 8GB VRAM.
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-16384}
+      OLLAMA_KEEP_ALIVE: 30m
     deploy:
       resources:
         reservations:
@@ -17,11 +23,8 @@ services:
     volumes: [".:/workspace"]
     environment:
       ADL_LLM_BASE_URL: http://ollama:11434/v1
-      ADL_LLM_MODEL: ${ADL_LLM_MODEL:-qwen3.8:27b}
+      ADL_LLM_MODEL: ${ADL_LLM_MODEL:-bonsai-2:9b}
     depends_on: [ollama]
-    deploy:
-      resources:
-        reservations:
-          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    # The CNN is tiny and runs on CPU, leaving the GPU to the VLM.
 volumes:
   ollama:

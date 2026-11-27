@@ -121,3 +121,18 @@ def test_es_respects_budget(splits):
     assert b.used["forward_passes"] <= 10
     with pytest.raises(BudgetExceeded):
         b.charge("forward_passes", 1)
+
+
+def test_context_window_keeps_pairs_and_drops_old_images(splits):
+    from adl.agent.loop import context_window
+    env = ADLEnvironment(EditableCNN(), splits, Budget())
+    env.notes.append("n1")
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "t"}]
+    for i in range(40):
+        msgs += [{"role": "assistant", "content": "", "tool_calls": [{"id": str(i)}]},
+                 {"role": "tool", "tool_call_id": str(i), "content": "r"},
+                 {"role": "user", "content": [{"type": "text", "text": "img"}]}]
+    view = context_window(msgs, env, keep_last=10, keep_images=1)
+    assert view[0]["role"] == "system" and "n1" in view[2]["content"]
+    assert view[3]["role"] == "assistant"
+    assert sum(isinstance(m.get("content"), list) for m in view) == 1
