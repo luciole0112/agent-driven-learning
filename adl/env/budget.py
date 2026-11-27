@@ -25,9 +25,13 @@ class Budget:
     weight_values_read: int = 200_000
     sandbox_runs: int = 100
     edits: int = 200
+    # images pushed through the target network (the common unit used to give
+    # the agent, ES, random search and backprop the same budget; a backward
+    # pass is charged as 2 forward images). Unlimited unless set.
+    forward_images: int = 10**12
     used: dict = field(default_factory=lambda: {
         "forward_passes": 0, "evaluations": 0, "weight_values_read": 0,
-        "sandbox_runs": 0, "edits": 0})
+        "sandbox_runs": 0, "edits": 0, "forward_images": 0})
 
     def charge(self, kind: str, amount: int = 1) -> None:
         limit = getattr(self, kind)
