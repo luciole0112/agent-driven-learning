@@ -1,0 +1,19 @@
+[project]
+name = "adl"
+version = "0.1.0"
+description = "Agent-Driven Learning: an agent edits a CNN's internals instead of backprop"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.1", "numpy>=1.24", "pillow>=10", "pyyaml>=6"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["adl*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
