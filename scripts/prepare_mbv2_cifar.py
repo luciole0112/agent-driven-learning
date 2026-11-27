@@ -75,6 +75,7 @@ def main() -> None:
         if "R0" in a.start:
             save("R0", r0, {"seed": a.seed})
         if "R0c" in a.start:
+            r0.to(a.device)
             recalibrate_bn(r0, splits["train"]["x"], 2000, a.device)
             save("R0c", r0, {"seed": a.seed, "bn_recalibrated_on": 2000})
     prev = json.loads((out / "start_points.json").read_text()) if (out / "start_points.json").exists() else {}
