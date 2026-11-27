@@ -1,0 +1,27 @@
+# Usage (WSL2 + Docker Desktop, NVIDIA GPU):
+#   docker compose up -d ollama
+#   docker compose exec ollama ollama pull qwen3.8:27b     # or another vision+tools model
+#   docker compose run --rm adl pytest -q
+#   docker compose run --rm adl python scripts/run_experiment.py --method agent
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports: ["11434:11434"]
+    volumes: ["ollama:/root/.ollama"]
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+  adl:
+    build: {context: ., dockerfile: docker/Dockerfile}
+    volumes: [".:/workspace"]
+    environment:
+      ADL_LLM_BASE_URL: http://ollama:11434/v1
+      ADL_LLM_MODEL: ${ADL_LLM_MODEL:-qwen3.8:27b}
+    depends_on: [ollama]
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+volumes:
+  ollama:
