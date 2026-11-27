@@ -48,6 +48,36 @@ def tool_schemas(env: ADLEnvironment) -> list[dict]:
     return out
 
 
+def context_window(messages: list[dict], env: ADLEnvironment, keep_last: int = 30,
+                   keep_images: int = 2) -> list[dict]:
+    """What the model sees each turn.
+
+    Local VLMs have short contexts, so the full history is kept on disk but
+    the prompt holds: system + task, the agent's notes, and the most recent
+    ``keep_last`` messages (starting at an assistant turn so tool results stay
+    paired with their calls). Only the newest ``keep_images`` image messages
+    keep their pixels; older ones become a text placeholder.
+    """
+    head, tail = messages[:2], messages[2:]
+    if len(tail) > keep_last:
+        start = len(tail) - keep_last
+        while start < len(tail) and tail[start].get("role") != "assistant":
+            start += 1
+        tail = tail[start:]
+    out, seen = [], 0
+    for m in reversed(tail):
+        if isinstance(m.get("content"), list):
+            seen += 1
+            if seen > keep_images:
+                m = {"role": m["role"], "content": "[older images omitted to save context]"}
+        out.append(m)
+    out.reverse()
+    extra = []
+    if env.notes:
+        extra = [{"role": "user", "content": "Your notes so far:\n- " + "\n- ".join(env.notes[-20:])}]
+    return head + extra + out
+
+
 def run_agent(env: ADLEnvironment, llm: LLM | None = None, max_turns: int = 150,
               transcript_path: str | None = None, log=print) -> dict:
     llm = llm or ChatClient()
@@ -60,7 +90,7 @@ def run_agent(env: ADLEnvironment, llm: LLM | None = None, max_turns: int = 150,
     messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT},
                             {"role": "user", "content": task}]
     for turn in range(max_turns):
-        msg = llm.chat(messages, tools)
+        msg = llm.chat(context_window(messages, env), tools)
         messages.append({k: v for k, v in msg.items() if k in ("role", "content", "tool_calls")})
         calls = msg.get("tool_calls") or []
         if not calls:

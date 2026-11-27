@@ -4,7 +4,7 @@ No API key is needed for local Ollama. The endpoint and model are taken from
 environment variables so they can be swapped without code changes:
 
     ADL_LLM_BASE_URL  (default http://localhost:11434/v1)
-    ADL_LLM_MODEL     (default qwen3.8:27b)
+    ADL_LLM_MODEL     (default bonsai-2:9b)
     ADL_LLM_API_KEY   (optional; sent as Bearer token if set)
 """
 
@@ -20,7 +20,7 @@ from dataclasses import dataclass
 @dataclass
 class LLMConfig:
     base_url: str = os.environ.get("ADL_LLM_BASE_URL", "http://localhost:11434/v1")
-    model: str = os.environ.get("ADL_LLM_MODEL", "qwen3.8:27b")
+    model: str = os.environ.get("ADL_LLM_MODEL", "bonsai-2:9b")
     api_key: str | None = os.environ.get("ADL_LLM_API_KEY")
     temperature: float = 0.6
     max_tokens: int = 4096
