@@ -26,5 +26,19 @@ services:
       ADL_LLM_MODEL: ${ADL_LLM_MODEL:-bonsai-2:9b}
     depends_on: [ollama]
     # The CNN is tiny and runs on CPU, leaving the GPU to the VLM.
+  # MobileNetV2 / CIFAR-10 experiments (docs/cifar_mbv2_design_v1.md): no VLM,
+  # the GPU goes to the target network. CIFAR-10 is stored in ./data and the
+  # ImageNet weights in ./.torch (both git-ignored).
+  #   docker compose run --rm adl-gpu python scripts/prepare_mbv2_cifar.py --start S0 S1 S2 R0 R0c
+  adl-gpu:
+    build: {context: ., dockerfile: docker/Dockerfile}
+    volumes: [".:/workspace"]
+    environment:
+      TORCH_HOME: /workspace/.torch
+    shm_size: 2gb
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
 volumes:
   ollama:

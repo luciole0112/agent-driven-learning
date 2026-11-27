@@ -6,6 +6,7 @@ LLM/VLM を基盤とする Agent が、CNN の内部表現を観察・分析・�
 - 先行研究と成立可能性の報告：[docs/feasibility_report_v1.md](docs/feasibility_report_v1.md)
 - Stage 0 の比較手法の予備結果：[docs/stage0_baselines.md](docs/stage0_baselines.md)
 - パイロット実行手順（8GB GPU）：[docs/pilot_guide.md](docs/pilot_guide.md)
+- 本実験の設計（CIFAR-10 × MobileNetV2）：[docs/cifar_mbv2_design_v1.md](docs/cifar_mbv2_design_v1.md)
 
 ## 中心の問い
 
