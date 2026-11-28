@@ -37,6 +37,7 @@ def main() -> None:
     ap.add_argument("--fake-data", action="store_true")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--save-model", action="store_true", help="also save the final model next to the JSON (.pt)")
     a = ap.parse_args()
     splits = M_splits(a)
     model = torch.load(a.start, map_location=a.device, weights_only=False).to(a.device).eval()
@@ -62,6 +63,8 @@ def main() -> None:
     out = Path(a.out or f"runs/mbv2/baselines/{Path(a.start).stem}_{a.method}_{a.space.replace(':', '')}_s{a.seed}.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(rep, indent=2))
+    if a.save_model:
+        torch.save(m.cpu().eval(), out.with_suffix(".pt"))
     print(json.dumps({k: v for k, v in rep.items() if k != "curve"}, indent=2))
 
 
